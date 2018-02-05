@@ -17,11 +17,7 @@
 
 package de.schildbach.wallet.ui;
 
-import static com.google.common.base.Preconditions.checkState;
-
 import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
@@ -52,6 +48,7 @@ import android.app.DialogFragment;
 import android.app.FragmentManager;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnShowListener;
+import android.content.Intent;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.text.Editable;
@@ -87,6 +84,8 @@ public class BackupWalletDialogFragment extends DialogFragment {
     private View passwordMismatchView;
     private CheckBox showView;
     private Button positiveButton;
+
+    private static final int REQUEST_CODE_CREATE_DOCUMENT = 0;
 
     private static final Logger log = LoggerFactory.getLogger(BackupWalletDialogFragment.class);
 
@@ -190,11 +189,9 @@ public class BackupWalletDialogFragment extends DialogFragment {
             passwordView.setText(null); // get rid of it asap
             passwordAgainView.setText(null);
 
-            backupWallet(password);
+            backupWallet();
 
             dismiss();
-
-            application.getConfiguration().disarmBackupReminder();
         } else {
             passwordMismatchView.setVisibility(View.VISIBLE);
         }
@@ -230,62 +227,69 @@ public class BackupWalletDialogFragment extends DialogFragment {
         positiveButton.setEnabled(hasPassword && hasPasswordAgain);
     }
 
-    private void backupWallet(final String password) {
-        final File file = determineBackupFile();
-
-        final Protos.Wallet walletProto = new WalletProtobufSerializer().walletToProto(wallet);
-
-        Writer cipherOut = null;
-
-        try {
-            final ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            walletProto.writeTo(baos);
-            baos.close();
-            final byte[] plainBytes = baos.toByteArray();
-
-            cipherOut = new OutputStreamWriter(new FileOutputStream(file), Charsets.UTF_8);
-            cipherOut.write(Crypto.encrypt(plainBytes, password.toCharArray()));
-            cipherOut.flush();
-
-            log.info("backed up wallet to: '" + file + "'");
-
-            ArchiveBackupDialogFragment.show(getFragmentManager(), file);
-        } catch (final IOException x) {
-            final DialogBuilder dialog = DialogBuilder.warn(activity, R.string.import_export_keys_dialog_failure_title);
-            dialog.setMessage(getString(R.string.export_keys_dialog_failure, x.getMessage()));
-            dialog.singleDismissButton(null);
-            dialog.show();
-
-            log.error("problem backing up wallet", x);
-        } finally {
-            if (cipherOut != null) {
-                try {
-                    cipherOut.close();
-                } catch (final IOException x) {
-                    // swallow
-                }
-            }
-        }
-    }
-
-    private File determineBackupFile() {
-        Constants.Files.EXTERNAL_WALLET_BACKUP_DIR.mkdirs();
-        checkState(Constants.Files.EXTERNAL_WALLET_BACKUP_DIR.isDirectory(), "%s is not a directory",
-                Constants.Files.EXTERNAL_WALLET_BACKUP_DIR);
-
+    private void backupWallet() {
         final DateFormat dateFormat = Iso8601Format.newDateFormat();
         dateFormat.setTimeZone(TimeZone.getDefault());
 
-        for (int i = 0; true; i++) {
-            final StringBuilder filename = new StringBuilder(Constants.Files.EXTERNAL_WALLET_BACKUP);
-            filename.append('-');
-            filename.append(dateFormat.format(new Date()));
-            if (i > 0)
-                filename.append(" (").append(i).append(')');
+        final StringBuilder filename = new StringBuilder(Constants.Files.EXTERNAL_WALLET_BACKUP);
+        filename.append('-');
+        filename.append(dateFormat.format(new Date()));
 
-            final File file = new File(Constants.Files.EXTERNAL_WALLET_BACKUP_DIR, filename.toString());
-            if (!file.exists())
-                return file;
+        final Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(Constants.MIMETYPE_WALLET_BACKUP);
+        intent.putExtra(Intent.EXTRA_TITLE, filename.toString());
+        startActivityForResult(intent, REQUEST_CODE_CREATE_DOCUMENT);
+    }
+
+    @Override
+    public void onActivityResult(final int requestCode, final int resultCode, final Intent intent) {
+
+        final String password = "a"; // TODO!!!!
+
+        log.info("========================= fragment.onActivityResult " + requestCode + " " + resultCode);
+
+        if (requestCode == REQUEST_CODE_CREATE_DOCUMENT) {
+            if (resultCode == Activity.RESULT_OK) {
+                final Protos.Wallet walletProto = new WalletProtobufSerializer().walletToProto(wallet);
+
+                Writer cipherOut = null;
+
+                try {
+                    final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    walletProto.writeTo(baos);
+                    baos.close();
+                    final byte[] plainBytes = baos.toByteArray();
+
+                    cipherOut = new OutputStreamWriter(activity.getContentResolver().openOutputStream(intent.getData()),
+                            Charsets.UTF_8);
+                    cipherOut.write(Crypto.encrypt(plainBytes, password.toCharArray()));
+                    cipherOut.flush();
+
+                    log.info("backed up wallet to: '" + /* file + */ "'");
+
+                    application.getConfiguration().disarmBackupReminder();
+                } catch (final IOException x) {
+                    final DialogBuilder dialog = DialogBuilder.warn(activity,
+                            R.string.import_export_keys_dialog_failure_title);
+                    dialog.setMessage(getString(R.string.export_keys_dialog_failure, x.getMessage()));
+                    dialog.singleDismissButton(null);
+                    dialog.show();
+                    log.error("problem backing up wallet", x);
+                } finally {
+                    if (cipherOut != null) {
+                        try {
+                            cipherOut.close();
+                        } catch (final IOException x) {
+                            // swallow
+                        }
+                    }
+                }
+            } else if (resultCode == Activity.RESULT_CANCELED) {
+                log.info("cancelled backing up wallet");
+            }
+        } else {
+            super.onActivityResult(requestCode, resultCode, intent);
         }
     }
 }
